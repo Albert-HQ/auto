@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 from bilevel_maddpg.model import Actor, Critic
+from bilevel_maddpg.utils import agent_obs_dim, safe_load_state_dict
 
 # leader agent for unconstrained stackelberg maddpg
 class Leader_Bilevel:
@@ -14,37 +14,49 @@ class Leader_Bilevel:
         # device
         self.device = torch.device('cuda' if torch.cuda.is_available() and getattr(args, 'use_cuda', True) else 'cpu')
 
+        actor_input_dim = agent_obs_dim(args, agent_id)
         # create the network
-        self.actor_network = Actor(args, agent_id, 8).to(self.device)
+        self.actor_network = Actor(args, agent_id, actor_input_dim).to(self.device)
         self.critic_network = Critic(args).to(self.device)
 
         # build up the target network
-        self.actor_target_network = Actor(args, agent_id, 8).to(self.device)
+        self.actor_target_network = Actor(args, agent_id, actor_input_dim).to(self.device)
         self.critic_target_network = Critic(args).to(self.device)
 
-        # load the weights into the target networks
-        self.actor_target_network.load_state_dict(self.actor_network.state_dict())
-        self.critic_target_network.load_state_dict(self.critic_network.state_dict())
+        self._sync_target_networks()
 
         # create the optimizer
         self.actor_optim = torch.optim.Adam(self.actor_network.parameters(), lr=self.args.lr_actor)
         self.critic_optim = torch.optim.Adam(self.critic_network.parameters(), lr=self.args.lr_critic)
 
         # create the dict for store the model
-        if not os.path.exists(self.args.save_dir):
-            os.mkdir(self.args.save_dir)
-            
+        os.makedirs(self.args.save_dir, exist_ok=True)
+
         # path to save the model
         self.model_path = self.args.save_dir + '/' + 'agent_%d' % agent_id
-        if not os.path.exists(self.model_path):
-            os.mkdir(self.model_path)
+        os.makedirs(self.model_path, exist_ok=True)
 
         # load model
-        if os.path.exists(self.model_path + '/actor_params.pkl'):
-            self.actor_network.load_state_dict(torch.load(self.model_path + '/actor_params.pkl', map_location=self.device))
-            
-        if os.path.exists(self.model_path + '/critic_params.pkl'):
-            self.critic_network.load_state_dict(torch.load(self.model_path + '/critic_params.pkl', map_location=self.device))
+        actor_loaded = safe_load_state_dict(
+            self.actor_network,
+            self.model_path + '/actor_params.pkl',
+            self.device,
+            f'leader-bilevel-{agent_id} actor'
+        )
+
+        critic_loaded = safe_load_state_dict(
+            self.critic_network,
+            self.model_path + '/critic_params.pkl',
+            self.device,
+            f'leader-bilevel-{agent_id} critic'
+        )
+
+        if actor_loaded or critic_loaded:
+            self._sync_target_networks()
+
+    def _sync_target_networks(self):
+        self.actor_target_network.load_state_dict(self.actor_network.state_dict())
+        self.critic_target_network.load_state_dict(self.critic_network.state_dict())
 
     # soft update
     def _soft_update_target_network(self, tau=None):

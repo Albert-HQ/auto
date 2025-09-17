@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 from bilevel_maddpg.model import Actor, Critic, Cost
+from bilevel_maddpg.utils import agent_action_dim, agent_obs_dim, safe_load_state_dict
 
 # follower agent for constrained stackelberg maddpg
 class Follower:
@@ -16,21 +16,20 @@ class Follower:
         # device
         self.device = torch.device('cuda' if torch.cuda.is_available() and getattr(args, 'use_cuda', True) else 'cpu')
 
+        obs_dim = agent_obs_dim(args, agent_id)
+        self._leader_action_dim = agent_action_dim(args, 0) if agent_id > 0 else 0
+        actor_input_dim = obs_dim + self._leader_action_dim
+
         # create the network
-        self.actor_network = Actor(args, agent_id, 9).to(self.device)
+        self.actor_network = Actor(args, agent_id, actor_input_dim).to(self.device)
         self.critic_network = Critic(args).to(self.device)
         # 双Q网络（TD3）
         self.critic_network2 = Critic(args).to(self.device)
 
         # build up the target network
-        self.actor_target_network = Actor(args, agent_id, 9).to(self.device)
+        self.actor_target_network = Actor(args, agent_id, actor_input_dim).to(self.device)
         self.critic_target_network = Critic(args).to(self.device)
         self.critic_target_network2 = Critic(args).to(self.device)
-
-        # load the weights into the target networks
-        self.actor_target_network.load_state_dict(self.actor_network.state_dict())
-        self.critic_target_network.load_state_dict(self.critic_network.state_dict())
-        self.critic_target_network2.load_state_dict(self.critic_network2.state_dict())
 
         # create the optimizer
         self.actor_optim = torch.optim.Adam(self.actor_network.parameters(), lr=self.args.lr_actor)
@@ -43,23 +42,48 @@ class Follower:
         self.cost_target_network.load_state_dict(self.cost_network.state_dict())
         self.cost_optim = torch.optim.Adam(self.cost_network.parameters(), lr=self.args.lr_critic)
 
+        self._sync_target_networks()
+
         # create the dict for store the model
-        if not os.path.exists(self.args.save_dir):
-            os.mkdir(self.args.save_dir)
+        os.makedirs(self.args.save_dir, exist_ok=True)
         # path to save the model
         self.model_path = self.args.save_dir + '/' + 'agent_%d' % agent_id
-        if not os.path.exists(self.model_path):
-            os.mkdir(self.model_path)
+        os.makedirs(self.model_path, exist_ok=True)
 
         # load model
-        if os.path.exists(self.model_path + '/actor_params.pkl'):
-            self.actor_network.load_state_dict(torch.load(self.model_path + '/actor_params.pkl', map_location=self.device))
-        if os.path.exists(self.model_path + '/critic_params.pkl'):
-            self.critic_network.load_state_dict(torch.load(self.model_path + '/critic_params.pkl', map_location=self.device))
-        if os.path.exists(self.model_path + '/critic2_params.pkl'):
-            self.critic_network2.load_state_dict(torch.load(self.model_path + '/critic2_params.pkl', map_location=self.device))
-        if os.path.exists(self.model_path + '/cost_params.pkl'):
-            self.cost_network.load_state_dict(torch.load(self.model_path + '/cost_params.pkl', map_location=self.device))
+        actor_loaded = safe_load_state_dict(
+            self.actor_network,
+            self.model_path + '/actor_params.pkl',
+            self.device,
+            f'follower-{agent_id} actor'
+        )
+        critic_loaded = safe_load_state_dict(
+            self.critic_network,
+            self.model_path + '/critic_params.pkl',
+            self.device,
+            f'follower-{agent_id} critic'
+        )
+        critic2_loaded = safe_load_state_dict(
+            self.critic_network2,
+            self.model_path + '/critic2_params.pkl',
+            self.device,
+            f'follower-{agent_id} critic2'
+        )
+        cost_loaded = safe_load_state_dict(
+            self.cost_network,
+            self.model_path + '/cost_params.pkl',
+            self.device,
+            f'follower-{agent_id} cost'
+        )
+
+        if any([actor_loaded, critic_loaded, critic2_loaded, cost_loaded]):
+            self._sync_target_networks()
+
+    def _sync_target_networks(self):
+        self.actor_target_network.load_state_dict(self.actor_network.state_dict())
+        self.critic_target_network.load_state_dict(self.critic_network.state_dict())
+        self.critic_target_network2.load_state_dict(self.critic_network2.state_dict())
+        self.cost_target_network.load_state_dict(self.cost_network.state_dict())
 
     # soft update
     def _soft_update_target_network(self, tau=None):
@@ -81,12 +105,15 @@ class Follower:
     def select_action(self, o, leader_action, noise_rate=0.0, epsilon=0.0):
         self.actor_network.eval()
         with torch.no_grad():
-            # 拼接领导者动作到观察，形成9维输入
-            if isinstance(leader_action, np.ndarray):
-                la = leader_action
+            # 拼接领导者动作到观察
+            obs_np = np.asarray(o, dtype=np.float32)
+            if self._leader_action_dim:
+                la = np.asarray(leader_action, dtype=np.float32).reshape(-1)
+                if la.size != self._leader_action_dim:
+                    la = np.resize(la, self._leader_action_dim)
+                o_aug = np.concatenate([obs_np, la], axis=0)
             else:
-                la = np.array([leader_action], dtype=np.float32)
-            o_aug = np.concatenate([np.asarray(o, dtype=np.float32), la.reshape(-1)], axis=0)
+                o_aug = obs_np
             o_t = torch.tensor(o_aug, dtype=torch.float32, device=self.device).unsqueeze(0)
             a = self.actor_network(o_t)
             a = a.squeeze(0).cpu().numpy()
