@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"command": "python main_bilevel.py --scenario merge --action-type discrete --version c_bilevel --use-mip --smoke-test",
+			"label": "smoke-merge-discrete",
+			"group": "build",
+			"problemMatcher": []
+		}
+	]
+}

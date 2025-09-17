@@ -1,0 +1,22 @@
+{
+  "scenario_name": "merge-v0",
+  "action_type": "discrete",
+  "use_mip": true,
+  "time_steps": 200000,
+  "max_episode_len": 300,
+  "batch_size": 256,
+  "sample_size": 512,
+  "updates_per_step": 1,
+  "gamma": 0.95,
+  "tau": 0.01,
+  "mip_big_m": 1000.0,
+  "per_alpha": 0.6,
+  "per_beta_start": 0.4,
+  "per_beta_increment": 0.0,
+  "per_eps": 1e-6,
+  "evaluate": false,
+  "evaluate_rate": 5000,
+  "evaluate_episodes": 10,
+  "evaluate_episode_len": 300,
+  "record_video": false
+}
